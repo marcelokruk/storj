@@ -573,7 +573,7 @@ func NewTest(ctx context.Context, t *testing.T, snID, upID *identity.FullIdentit
 		verifier:         verifier,
 		totalAllocated:   math.MaxInt64,
 		totalBwAllocated: math.MaxInt64,
-		whitelist:        whitelist,
+		satelliteKeys:    whitelist,
 	}
 	//init ps server grpc
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

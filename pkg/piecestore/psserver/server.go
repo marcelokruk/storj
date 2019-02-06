@@ -60,16 +60,17 @@ type Server struct {
 	log              *zap.Logger
 	storage          *pstore.Storage
 	DB               *psdb.DB
-	pkey             crypto.PrivateKey
+	identity         *identity.FullIdentity
 	totalAllocated   int64 // TODO: use memory.Size
 	totalBwAllocated int64 // TODO: use memory.Size
-	whitelist        map[storj.NodeID]crypto.PublicKey
+	satelliteKeys    map[storj.NodeID]crypto.PublicKey
+	useWhitelist     bool
 	verifier         auth.SignedMessageVerifier
 	kad              *kademlia.Kademlia
 }
 
 // NewEndpoint creates a new endpoint
-func NewEndpoint(log *zap.Logger, config Config, storage *pstore.Storage, db *psdb.DB, pkey crypto.PrivateKey, k *kademlia.Kademlia) (*Server, error) {
+func NewEndpoint(log *zap.Logger, config Config, storage *pstore.Storage, db *psdb.DB, fID *identity.FullIdentity, k *kademlia.Kademlia) (*Server, error) {
 	// read the allocated disk space from the config file
 	allocatedDiskSpace := config.AllocatedDiskSpace.Int64()
 	allocatedBandwidth := config.AllocatedBandwidth.Int64()
@@ -122,7 +123,7 @@ func NewEndpoint(log *zap.Logger, config Config, storage *pstore.Storage, db *ps
 	}
 
 	// parse the comma separated list of approved satellite IDs into an array of storj.NodeIDs
-	whitelist := make(map[storj.NodeID]crypto.PublicKey)
+	satelliteKeys := make(map[storj.NodeID]crypto.PublicKey)
 	if config.SatelliteIDRestriction {
 		idStrings := strings.Split(config.WhitelistedSatelliteIDs, ",")
 		for _, s := range idStrings {
@@ -130,7 +131,7 @@ func NewEndpoint(log *zap.Logger, config Config, storage *pstore.Storage, db *ps
 			if err != nil {
 				return nil, err
 			}
-			whitelist[satID] = nil // we will set these later
+			satelliteKeys[satID] = nil // we look up keys on-demand
 		}
 	}
 
@@ -139,10 +140,11 @@ func NewEndpoint(log *zap.Logger, config Config, storage *pstore.Storage, db *ps
 		log:              log,
 		storage:          storage,
 		DB:               db,
-		pkey:             pkey,
+		identity:         fID,
 		totalAllocated:   allocatedDiskSpace,
 		totalBwAllocated: allocatedBandwidth,
-		whitelist:        whitelist,
+		satelliteKeys:    satelliteKeys,
+		useWhitelist:     config.SatelliteIDRestriction,
 		verifier:         auth.NewSignedMessageVerifier(),
 		kad:              k,
 	}, nil
@@ -296,8 +298,6 @@ func (s *Server) verifySignature(ctx context.Context, rba *pb.RenterBandwidthAll
 	if err != nil || pba.UplinkId != pi.ID {
 		return auth.ErrBadID.New("Uplink Node ID: %s vs %s", pba.UplinkId, pi.ID)
 	}
-
-	//todo:  use whitelist for satellites?
 	switch {
 	case len(pba.SerialNumber) == 0:
 		return pb.ErrPayer.Wrap(auth.ErrMissing.New("serial"))
@@ -311,14 +311,17 @@ func (s *Server) verifySignature(ctx context.Context, rba *pb.RenterBandwidthAll
 		return pb.ErrPayer.Wrap(auth.ErrExpired.New("%v vs %v", exp, time.Now().UTC()))
 	}
 	//verify message crypto
-	if err := auth.VerifyMsg(rba, pba.UplinkId); err != nil {
+	if err := auth.VerifyMessage(rba, s.identity.Leaf.PublicKey); err != nil {
 		return pb.ErrRenter.Wrap(err)
 	}
 	if !s.isWhitelisted(pba.SatelliteId) {
 		return pb.ErrPayer.Wrap(peertls.ErrVerifyCAWhitelist.New(""))
 	}
-	//todo: once the certs are removed from the PBA, use s.whitelist to check satellite signatures
-	if err := auth.VerifyMsg(&pba, pba.SatelliteId); err != nil {
+	satellitePublicKey, err := s.fetchPeerPublicKey(ctx, pba.SatelliteId)
+	if err != nil {
+		return pb.ErrPayer.Wrap(err)
+	}
+	if err := auth.VerifyMessage(&pba, satellitePublicKey); err != nil {
 		return pb.ErrPayer.Wrap(err)
 	}
 	return nil
@@ -338,18 +341,24 @@ func (s *Server) verifyPayerAllocation(pba *pb.PayerBandwidthAllocation, actionP
 
 //isWhitelisted returns true if a node ID exists in a list of approved node IDs
 func (s *Server) isWhitelisted(id storj.NodeID) bool {
-	if len(s.whitelist) == 0 {
-		return true // don't whitelist if the whitelist is empty
+	if !s.useWhitelist {
+		return true
 	}
-	_, found := s.whitelist[id]
+	_, found := s.satelliteKeys[id]
 	return found
 }
 
-func (s *Server) getPublicKey(ctx context.Context, id storj.NodeID) (crypto.PublicKey, error) {
+func (s *Server) fetchPeerPublicKey(ctx context.Context, id storj.NodeID) (crypto.PublicKey, error) {
+	if key, found := s.satelliteKeys[id]; found && key != nil {
+		return key, nil // cache hit
+	} else if !found && s.useWhitelist { //whitelist fail
+		return nil, peertls.ErrVerifyCAWhitelist.New("")
+	}
 	pID, err := s.kad.FetchPeerIdentity(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	s.satelliteKeys[id] = pID.Leaf.PublicKey
 	return pID.Leaf.PublicKey, nil
 }
 
