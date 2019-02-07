@@ -1,257 +1,182 @@
-// Copyright (C) 2018 Storj Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-package checker
+package checker_test
 
 import (
-	"context"
-	"math/rand"
-	"sort"
-	"strconv"
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
 
-	"storj.io/storj/internal/teststorj"
-	"storj.io/storj/pkg/auth"
-	"storj.io/storj/pkg/datarepair/queue"
-	"storj.io/storj/pkg/overlay"
-	"storj.io/storj/pkg/overlay/mocks"
+	"storj.io/storj/internal/testcontext"
+	"storj.io/storj/internal/testplanet"
 	"storj.io/storj/pkg/pb"
-	"storj.io/storj/pkg/pointerdb"
 	"storj.io/storj/pkg/storj"
-	"storj.io/storj/satellite/satellitedb"
-	"storj.io/storj/storage/redis"
-	"storj.io/storj/storage/redis/redisserver"
-	"storj.io/storj/storage/testqueue"
-	"storj.io/storj/storage/teststore"
+	"storj.io/storj/storage"
 )
 
-var ctx = context.Background()
-
 func TestIdentifyInjuredSegments(t *testing.T) {
-	logger := zap.NewNop()
-	pointerdb := pointerdb.NewServer(teststore.New(), &overlay.Cache{}, logger, pointerdb.Config{}, nil)
-	assert.NotNil(t, pointerdb)
+	// TODO note satellite's: own sub-systems need to be disabled
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 4, UplinkCount: 0,
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		time.Sleep(2 * time.Second)
+		const numberOfNodes = 10
 
-	repairQueue := queue.NewQueue(testqueue.New())
+		pieces := make([]*pb.RemotePiece, 0, numberOfNodes)
+		// use online nodes
+		for i, storagenode := range planet.StorageNodes {
+			pieces = append(pieces, &pb.RemotePiece{
+				PieceNum: int32(i),
+				NodeId:   storagenode.Identity.ID,
+			})
+		}
 
-	const N = 25
-	nodes := []*pb.Node{}
-	segs := []*pb.InjuredSegment{}
-	//fill a pointerdb
-	for i := 0; i < N; i++ {
-		s := strconv.Itoa(i)
-		ids := teststorj.NodeIDsFromStrings([]string{s + "a", s + "b", s + "c", s + "d"}...)
-
-		p := &pb.Pointer{
+		// simulate offline nodes
+		expectedLostPieces := make(map[int32]bool)
+		for i := len(pieces); i < numberOfNodes; i++ {
+			pieces = append(pieces, &pb.RemotePiece{
+				PieceNum: int32(i),
+				NodeId:   storj.NodeID{byte(i)},
+			})
+			expectedLostPieces[int32(i)] = true
+		}
+		pointer := &pb.Pointer{
 			Remote: &pb.RemoteSegment{
 				Redundancy: &pb.RedundancyScheme{
-					RepairThreshold: int32(2),
+					MinReq:          int32(4),
+					RepairThreshold: int32(8),
 				},
-				PieceId: strconv.Itoa(i),
-				RemotePieces: []*pb.RemotePiece{
-					{PieceNum: 0, NodeId: ids[0]},
-					{PieceNum: 1, NodeId: ids[1]},
-					{PieceNum: 2, NodeId: ids[2]},
-					{PieceNum: 3, NodeId: ids[3]},
-				},
+				PieceId:      "fake-piece-id",
+				RemotePieces: pieces,
 			},
 		}
-		req := &pb.PutRequest{
-			Path:    p.Remote.PieceId,
-			Pointer: p,
-		}
-		ctx = auth.WithAPIKey(ctx, nil)
-		resp, err := pointerdb.Put(ctx, req)
-		assert.NotNil(t, resp)
+
+		// put test pointer to db
+		pointerdb := planet.Satellites[0].Metainfo.Service
+		err := pointerdb.Put(pointer.Remote.PieceId, pointer)
 		assert.NoError(t, err)
 
-		//nodes for cache
-		selection := rand.Intn(4)
-		for _, v := range ids[:selection] {
-			n := &pb.Node{Id: v, Type: pb.NodeType_STORAGE, Address: &pb.NodeAddress{Address: ""}}
-			nodes = append(nodes, n)
-		}
-		pieces := []int32{0, 1, 2, 3}
-		//expected injured segments
-		if len(ids[:selection]) < int(p.Remote.Redundancy.RepairThreshold) {
-			seg := &pb.InjuredSegment{
-				Path:       p.Remote.PieceId,
-				LostPieces: pieces[selection:],
+		checker := planet.Satellites[0].Repair.Checker
+		err = checker.IdentifyInjuredSegments(ctx)
+		assert.NoError(t, err)
+
+		//check if the expected segments were added to the queue
+		repairQueue := planet.Satellites[0].DB.RepairQueue()
+		injuredSegment, err := repairQueue.Dequeue(ctx)
+		assert.NoError(t, err)
+
+		assert.Equal(t, "fake-piece-id", injuredSegment.Path)
+		assert.Equal(t, len(expectedLostPieces), len(injuredSegment.LostPieces))
+		for _, lostPiece := range injuredSegment.LostPieces {
+			if !expectedLostPieces[lostPiece] {
+				t.Error("should be lost: ", lostPiece)
 			}
-			segs = append(segs, seg)
 		}
-	}
-	//fill a overlay cache
-	overlayServer := mocks.NewOverlay(nodes)
-	limit := 0
-	interval := time.Second
-	// creating in-memory db and opening connection
-	db, err := satellitedb.NewInMemory()
-	assert.NoError(t, err)
-	defer func() {
-		err = db.Close()
-		assert.NoError(t, err)
-	}()
-	err = db.CreateTables()
-	assert.NoError(t, err)
-	checker := newChecker(pointerdb, db.StatDB(), repairQueue, overlayServer, db.Irreparable(), limit, logger, interval)
-	assert.NoError(t, err)
-	err = checker.identifyInjuredSegments(ctx)
-	assert.NoError(t, err)
-
-	//check if the expected segments were added to the queue
-	dequeued := []*pb.InjuredSegment{}
-	for i := 0; i < len(segs); i++ {
-		injSeg, err := repairQueue.Dequeue(ctx)
-		assert.NoError(t, err)
-		dequeued = append(dequeued, &injSeg)
-	}
-	sort.Slice(segs, func(i, k int) bool { return segs[i].Path < segs[k].Path })
-	sort.Slice(dequeued, func(i, k int) bool { return dequeued[i].Path < dequeued[k].Path })
-
-	for i := 0; i < len(segs); i++ {
-		assert.True(t, proto.Equal(segs[i], dequeued[i]))
-	}
+	})
 }
 
 func TestOfflineNodes(t *testing.T) {
-	logger := zap.NewNop()
-	pointerdb := pointerdb.NewServer(teststore.New(), &overlay.Cache{}, logger, pointerdb.Config{}, nil)
-	assert.NotNil(t, pointerdb)
+	// TODO note satellite's: own sub-systems need to be disabled
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 4, UplinkCount: 0,
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		time.Sleep(2 * time.Second)
 
-	repairQueue := queue.NewQueue(testqueue.New())
-	const N = 50
-	nodes := []*pb.Node{}
-	nodeIDs := storj.NodeIDList{}
-	expectedOffline := []int32{}
-	for i := 0; i < N; i++ {
-		id := teststorj.NodeIDFromString(strconv.Itoa(i))
-		n := &pb.Node{Id: id, Type: pb.NodeType_STORAGE, Address: &pb.NodeAddress{Address: ""}}
-		nodes = append(nodes, n)
-		if i%(rand.Intn(5)+2) == 0 {
-			nodeIDs = append(nodeIDs, teststorj.NodeIDFromString("id"+id.String()))
-			expectedOffline = append(expectedOffline, int32(i))
-		} else {
-			nodeIDs = append(nodeIDs, id)
+		const numberOfNodes = 10
+		nodeIDs := storj.NodeIDList{}
+
+		// use online nodes
+		for _, storagenode := range planet.StorageNodes {
+			nodeIDs = append(nodeIDs, storagenode.Identity.ID)
 		}
-	}
-	overlayServer := mocks.NewOverlay(nodes)
-	limit := 0
-	interval := time.Second
-	// creating in-memory db and opening connection
-	db, err := satellitedb.NewInMemory()
-	assert.NoError(t, err)
-	defer func() {
-		err = db.Close()
+
+		// simulate offline nodes
+		expectedOffline := make([]int32, 0)
+		for i := len(nodeIDs); i < numberOfNodes; i++ {
+			nodeIDs = append(nodeIDs, storj.NodeID{byte(i)})
+			expectedOffline = append(expectedOffline, int32(i))
+		}
+
+		checker := planet.Satellites[0].Repair.Checker
+		offline, err := checker.OfflineNodes(ctx, nodeIDs)
 		assert.NoError(t, err)
-	}()
-	err = db.CreateTables()
-	assert.NoError(t, err)
-	checker := newChecker(pointerdb, db.StatDB(), repairQueue, overlayServer, db.Irreparable(), limit, logger, interval)
-	assert.NoError(t, err)
-	offline, err := checker.offlineNodes(ctx, nodeIDs)
-	assert.NoError(t, err)
-	assert.Equal(t, expectedOffline, offline)
+		assert.Equal(t, expectedOffline, offline)
+	})
 }
 
-func BenchmarkIdentifyInjuredSegments(b *testing.B) {
-	logger := zap.NewNop()
-	pointerdb := pointerdb.NewServer(teststore.New(), &overlay.Cache{}, logger, pointerdb.Config{}, nil)
-	assert.NotNil(b, pointerdb)
+func TestIdentifyIrreparableSegments(t *testing.T) {
+	// TODO note satellite's: own sub-systems need to be disabled
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 3, UplinkCount: 0,
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		time.Sleep(2 * time.Second)
 
-	// creating in-memory db and opening connection
-	db, err := satellitedb.NewInMemory()
-	defer func() {
-		err = db.Close()
-		assert.NoError(b, err)
-	}()
-	err = db.CreateTables()
-	assert.NoError(b, err)
+		const numberOfNodes = 10
+		pieces := make([]*pb.RemotePiece, 0, numberOfNodes)
+		// use online nodes
+		for i, storagenode := range planet.StorageNodes {
+			pieces = append(pieces, &pb.RemotePiece{
+				PieceNum: int32(i),
+				NodeId:   storagenode.ID(),
+			})
+		}
 
-	addr, cleanup, err := redisserver.Start()
-	defer cleanup()
-	assert.NoError(b, err)
-	client, err := redis.NewQueue(addr, "", 1)
-	assert.NoError(b, err)
-	repairQueue := queue.NewQueue(client)
-
-	const N = 25
-	nodes := []*pb.Node{}
-	segs := []*pb.InjuredSegment{}
-	//fill a pointerdb
-	for i := 0; i < N; i++ {
-		s := strconv.Itoa(i)
-		ids := teststorj.NodeIDsFromStrings([]string{s + "a", s + "b", s + "c", s + "d"}...)
-
-		p := &pb.Pointer{
+		// simulate offline nodes
+		expectedLostPieces := make(map[int32]bool)
+		for i := len(pieces); i < numberOfNodes; i++ {
+			pieces = append(pieces, &pb.RemotePiece{
+				PieceNum: int32(i),
+				NodeId:   storj.NodeID{byte(i)},
+			})
+			expectedLostPieces[int32(i)] = true
+		}
+		pointer := &pb.Pointer{
 			Remote: &pb.RemoteSegment{
 				Redundancy: &pb.RedundancyScheme{
-					RepairThreshold: int32(2),
+					MinReq:          int32(4),
+					RepairThreshold: int32(8),
 				},
-				PieceId: strconv.Itoa(i),
-				RemotePieces: []*pb.RemotePiece{
-					{PieceNum: 0, NodeId: ids[0]},
-					{PieceNum: 1, NodeId: ids[1]},
-					{PieceNum: 2, NodeId: ids[2]},
-					{PieceNum: 3, NodeId: ids[3]},
-				},
+				PieceId:      "fake-piece-id",
+				RemotePieces: pieces,
 			},
 		}
-		req := &pb.PutRequest{
-			Path:    p.Remote.PieceId,
-			Pointer: p,
-		}
-		ctx = auth.WithAPIKey(ctx, nil)
-		resp, err := pointerdb.Put(ctx, req)
-		assert.NotNil(b, resp)
-		assert.NoError(b, err)
 
-		//nodes for cache
-		selection := rand.Intn(4)
-		for _, v := range ids[:selection] {
-			n := &pb.Node{Id: v, Type: pb.NodeType_STORAGE, Address: &pb.NodeAddress{Address: ""}}
-			nodes = append(nodes, n)
-		}
-		pieces := []int32{0, 1, 2, 3}
-		//expected injured segments
-		if len(ids[:selection]) < int(p.Remote.Redundancy.RepairThreshold) {
-			seg := &pb.InjuredSegment{
-				Path:       p.Remote.PieceId,
-				LostPieces: pieces[selection:],
-			}
-			segs = append(segs, seg)
-		}
-	}
-	//fill a overlay cache
-	overlayServer := mocks.NewOverlay(nodes)
-	limit := 0
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		interval := time.Second
-		assert.NoError(b, err)
-		checker := newChecker(pointerdb, db.StatDB(), repairQueue, overlayServer, db.Irreparable(), limit, logger, interval)
-		assert.NoError(b, err)
+		// put test pointer to db
+		pointerdb := planet.Satellites[0].Metainfo.Service
+		err := pointerdb.Put(pointer.Remote.PieceId, pointer)
+		assert.NoError(t, err)
 
-		err = checker.identifyInjuredSegments(ctx)
-		assert.NoError(b, err)
+		checker := planet.Satellites[0].Repair.Checker
+		err = checker.IdentifyInjuredSegments(ctx)
+		assert.NoError(t, err)
 
-		//check if the expected segments were added to the queue
-		dequeued := []*pb.InjuredSegment{}
-		for i := 0; i < len(segs); i++ {
-			injSeg, err := repairQueue.Dequeue(ctx)
-			assert.NoError(b, err)
-			dequeued = append(dequeued, &injSeg)
-		}
-		sort.Slice(segs, func(i, k int) bool { return segs[i].Path < segs[k].Path })
-		sort.Slice(dequeued, func(i, k int) bool { return dequeued[i].Path < dequeued[k].Path })
+		// check if nothing was added to repair queue
+		repairQueue := planet.Satellites[0].DB.RepairQueue()
+		_, err = repairQueue.Dequeue(ctx)
+		assert.True(t, storage.ErrEmptyQueue.Has(err))
 
-		for i := 0; i < len(segs); i++ {
-			assert.True(b, proto.Equal(segs[i], dequeued[i]))
-		}
-	}
+		//check if the expected segments were added to the irreparable DB
+		irreparable := planet.Satellites[0].DB.Irreparable()
+		remoteSegmentInfo, err := irreparable.Get(ctx, []byte("fake-piece-id"))
+		assert.NoError(t, err)
+
+		assert.Equal(t, len(expectedLostPieces), int(remoteSegmentInfo.LostPiecesCount))
+		assert.Equal(t, 1, int(remoteSegmentInfo.RepairAttemptCount))
+		firstRepair := remoteSegmentInfo.RepairUnixSec
+
+		// check irreparable once again but wait a second
+		time.Sleep(1 * time.Second)
+		err = checker.IdentifyInjuredSegments(ctx)
+		assert.NoError(t, err)
+
+		remoteSegmentInfo, err = irreparable.Get(ctx, []byte("fake-piece-id"))
+		assert.NoError(t, err)
+
+		assert.Equal(t, len(expectedLostPieces), int(remoteSegmentInfo.LostPiecesCount))
+		// check if repair attempt count was incremented
+		assert.Equal(t, 2, int(remoteSegmentInfo.RepairAttemptCount))
+		assert.True(t, firstRepair < remoteSegmentInfo.RepairUnixSec)
+	})
 }

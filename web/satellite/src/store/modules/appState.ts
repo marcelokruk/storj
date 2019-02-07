@@ -1,7 +1,8 @@
-// Copyright (C) 2018 Storj Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { APP_STATE_MUTATIONS } from '../mutationConstants';
+import { APP_STATE_ACTIONS } from '@/utils/constants/actionNames';
 
 export const appStateModule = {
 	state: {
@@ -13,7 +14,9 @@ export const appStateModule = {
             isAccountDropdownShown: false,
             isDeleteProjectPopupShown: false,
             isDeleteAccountPopupShown: false,
+            isNewAPIKeyPopupShown: false,
             isSortProjectMembersByPopupShown: false,
+            isSuccessfulRegistrationPopupShown: false,
         },
 	},
 	mutations: {
@@ -41,7 +44,6 @@ export const appStateModule = {
         [APP_STATE_MUTATIONS.TOGGLE_DELETE_PROJECT_DROPDOWN](state: any): void {
             state.appState.isDeleteProjectPopupShown = !state.appState.isDeleteProjectPopupShown;
         },
-
         // Mutation changing delete account popup visibility
         [APP_STATE_MUTATIONS.TOGGLE_DELETE_ACCOUNT_DROPDOWN](state: any): void {
             state.appState.isDeleteAccountPopupShown = !state.appState.isDeleteAccountPopupShown;
@@ -49,6 +51,14 @@ export const appStateModule = {
 		// Mutation changing 'sort project members by' popup visibility
 		[APP_STATE_MUTATIONS.TOGGLE_SORT_PM_BY_DROPDOWN](state: any): void {
 			state.appState.isSortProjectMembersByPopupShown = !state.appState.isSortProjectMembersByPopupShown;
+		},
+        // Mutation changing new api key popup visibility
+        [APP_STATE_MUTATIONS.TOGGLE_NEW_API_KEY_POPUP](state: any): void {
+            state.appState.isNewAPIKeyPopupShown = !state.appState.isNewAPIKeyPopupShown;
+        },
+		// Mutation changing 'successful registration' popup visibility
+		[APP_STATE_MUTATIONS.TOGGLE_SUCCESSFUL_REGISTRATION_POPUP](state: any): void {
+			state.appState.isSuccessfulRegistrationPopupShown = !state.appState.isSuccessfulRegistrationPopupShown;
 		},
 
         // Mutation that closes each popup/dropdown
@@ -60,6 +70,8 @@ export const appStateModule = {
             state.appState.isDeleteProjectPopupShown = false;
             state.appState.isDeleteAccountPopupShown = false;
             state.appState.isSortProjectMembersByPopupShown = false;
+            state.appState.isNewAPIKeyPopupShown = false;
+			state.appState.isSuccessfulRegistrationPopupShown = false;
         },
 	},
 	actions: {
@@ -112,6 +124,20 @@ export const appStateModule = {
 			}
 
 			commit(APP_STATE_MUTATIONS.TOGGLE_SORT_PM_BY_DROPDOWN);
+		},
+        [APP_STATE_ACTIONS.TOGGLE_NEW_API_KEY]: function ({commit, state}: any): void {
+            if (!state.appState.isNewAPIKeyPopupShown) {
+                commit(APP_STATE_MUTATIONS.CLOSE_ALL);
+            }
+
+            commit(APP_STATE_MUTATIONS.TOGGLE_NEW_API_KEY_POPUP);
+        },
+		[APP_STATE_ACTIONS.TOGGLE_SUCCESSFUL_REGISTRATION_POPUP]: function ({commit, state}: any): void {
+			if (!state.appState.isSuccessfullRegistrationPopupShown) {
+				commit(APP_STATE_MUTATIONS.CLOSE_ALL);
+			}
+
+			commit(APP_STATE_MUTATIONS.TOGGLE_SUCCESSFUL_REGISTRATION_POPUP);
 		},
         closePopups: function ({commit}: any): void {
             commit(APP_STATE_MUTATIONS.CLOSE_ALL);

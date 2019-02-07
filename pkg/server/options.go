@@ -4,21 +4,20 @@
 package server
 
 import (
-	"crypto/x509"
 	"io/ioutil"
-	"os"
 
 	"google.golang.org/grpc"
 
 	"storj.io/storj/pkg/identity"
 	"storj.io/storj/pkg/peertls"
+	"storj.io/storj/pkg/pkcrypto"
 )
 
 // Options holds config, identity, and peer verification function data for use with a grpc server.
 type Options struct {
 	Config   Config
 	Ident    *identity.FullIdentity
-	RevDB    *peertls.RevocationDB
+	RevDB    *identity.RevocationDB
 	PCVFuncs []peertls.PeerCertVerificationFunc
 }
 
@@ -47,21 +46,28 @@ func (opts *Options) configure(c Config) (err error) {
 	var pcvs []peertls.PeerCertVerificationFunc
 	parseOpts := peertls.ParseExtOptions{}
 
-	if c.PeerCAWhitelistPath != "" {
-		caWhitelist, err := loadWhitelist(c.PeerCAWhitelistPath)
-		if err != nil {
-			return err
+	if c.UsePeerCAWhitelist {
+		whitelist := []byte(DefaultPeerCAWhitelist)
+		if c.PeerCAWhitelistPath != "" {
+			whitelist, err = ioutil.ReadFile(c.PeerCAWhitelistPath)
+			if err != nil {
+				return Error.New("unable to find whitelist file %v: %v", c.PeerCAWhitelistPath, err)
+			}
 		}
-		parseOpts.CAWhitelist = caWhitelist
-		pcvs = append(pcvs, peertls.VerifyCAWhitelist(caWhitelist))
+		parsed, err := pkcrypto.CertsFromPEM(whitelist)
+		if err != nil {
+			return Error.Wrap(err)
+		}
+		parseOpts.CAWhitelist = parsed
+		pcvs = append(pcvs, peertls.VerifyCAWhitelist(parsed))
 	}
 
 	if c.Extensions.Revocation {
-		opts.RevDB, err = peertls.NewRevDB(c.RevocationDBURL)
+		opts.RevDB, err = identity.NewRevDB(c.RevocationDBURL)
 		if err != nil {
 			return err
 		}
-		pcvs = append(pcvs, peertls.VerifyUnrevokedChainFunc(opts.RevDB))
+		pcvs = append(pcvs, identity.VerifyUnrevokedChainFunc(opts.RevDB))
 	}
 
 	exts := peertls.ParseExtensions(c.Extensions, parseOpts)
@@ -77,20 +83,4 @@ func (opts *Options) configure(c Config) (err error) {
 
 	opts.PCVFuncs = pcvs
 	return nil
-}
-
-func loadWhitelist(path string) ([]*x509.Certificate, error) {
-	w, err := ioutil.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-
-	var whitelist []*x509.Certificate
-	if w != nil {
-		whitelist, err = identity.DecodeAndParseChainPEM(w)
-		if err != nil {
-			return nil, Error.Wrap(err)
-		}
-	}
-	return whitelist, nil
 }

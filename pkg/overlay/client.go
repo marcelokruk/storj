@@ -1,4 +1,4 @@
-// Copyright (C) 2018 Storj Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 package overlay
@@ -8,8 +8,8 @@ import (
 
 	"github.com/zeebo/errs"
 
+	"storj.io/storj/pkg/identity"
 	"storj.io/storj/pkg/pb"
-	"storj.io/storj/pkg/provider"
 	"storj.io/storj/pkg/storj"
 	"storj.io/storj/pkg/transport"
 )
@@ -50,9 +50,14 @@ type Options struct {
 }
 
 // NewClient returns a new intialized Overlay Client
-func NewClient(identity *provider.FullIdentity, address string) (Client, error) {
+func NewClient(identity *identity.FullIdentity, address string) (Client, error) {
+	return NewClientContext(context.TODO(), identity, address)
+}
+
+// NewClientContext returns a new intialized Overlay Client
+func NewClientContext(ctx context.Context, identity *identity.FullIdentity, address string) (Client, error) {
 	tc := transport.NewClient(identity, &Cache{}) // add overlay to transport client as observer
-	conn, err := tc.DialAddress(context.Background(), address)
+	conn, err := tc.DialAddress(ctx, address)
 	if err != nil {
 		return nil, err
 	}

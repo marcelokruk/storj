@@ -1,4 +1,4 @@
-// Copyright (C) 2018 Storj Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { HttpLink } from 'apollo-link-http';
@@ -9,7 +9,7 @@ import { getToken } from '@/utils/tokenManager';
 
 // Satellite url
 const satelliteUrl = new HttpLink({
-	uri: 'http://localhost:8081/api/graphql/v0',
+	uri: 'http://localhost:10100/api/graphql/v0',
 
 });
 

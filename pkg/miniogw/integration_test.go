@@ -1,4 +1,4 @@
-// Copyright (C) 2018 Storj Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 package miniogw_test
@@ -13,6 +13,7 @@ import (
 
 	"github.com/minio/cli"
 	minio "github.com/minio/minio/cmd"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
@@ -22,8 +23,9 @@ import (
 	"storj.io/storj/internal/testidentity"
 	"storj.io/storj/internal/testplanet"
 	"storj.io/storj/pkg/cfgstruct"
+	"storj.io/storj/pkg/identity"
 	"storj.io/storj/pkg/miniogw"
-	"storj.io/storj/pkg/provider"
+	"storj.io/storj/satellite/console"
 )
 
 func TestUploadDownload(t *testing.T) {
@@ -37,12 +39,29 @@ func TestUploadDownload(t *testing.T) {
 
 	defer ctx.Check(planet.Shutdown)
 
-	err = flag.Set("pointer-db.auth.api-key", "apiKey")
+	// add project to satisfy constraint
+	project, err := planet.Satellites[0].DB.Console().Projects().Insert(context.Background(), &console.Project{
+		Name: "testProject",
+	})
+
+	assert.NoError(t, err)
+
+	apiKey := console.APIKey{}
+	apiKeyInfo := console.APIKeyInfo{
+		ProjectID: project.ID,
+		Name:      "testKey",
+	}
+
+	// add api key to db
+	_, err = planet.Satellites[0].DB.Console().APIKeys().Create(context.Background(), apiKey, apiKeyInfo)
+	assert.NoError(t, err)
+
+	err = flag.Set("pointer-db.auth.api-key", apiKey.String())
 	assert.NoError(t, err)
 
 	// bind default values to config
 	var gwCfg miniogw.Config
-	cfgstruct.Bind(&flag.FlagSet{}, &gwCfg)
+	cfgstruct.Bind(&pflag.FlagSet{}, &gwCfg)
 
 	// minio config directory
 	gwCfg.Minio.Dir = ctx.Dir("minio")
@@ -119,7 +138,7 @@ func TestUploadDownload(t *testing.T) {
 }
 
 // runGateway creates and starts a gateway
-func runGateway(ctx context.Context, c miniogw.Config, log *zap.Logger, identity *provider.FullIdentity) (err error) {
+func runGateway(ctx context.Context, c miniogw.Config, log *zap.Logger, identity *identity.FullIdentity) (err error) {
 
 	// set gateway flags
 	flags := flag.NewFlagSet("gateway", flag.ExitOnError)

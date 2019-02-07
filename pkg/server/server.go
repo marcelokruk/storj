@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
 	"storj.io/storj/pkg/identity"
@@ -28,9 +29,9 @@ type Server struct {
 	identity *identity.FullIdentity
 }
 
-// NewServer creates a Server out of an Identity, a net.Listener,
+// New creates a Server out of an Identity, a net.Listener,
 // a UnaryServerInterceptor, and a set of services.
-func NewServer(opts *Options, lis net.Listener,
+func New(opts *Options, lis net.Listener,
 	interceptor grpc.UnaryServerInterceptor, services ...Service) (
 	*Server, error) {
 	grpcOpts, err := opts.grpcOpts()
@@ -82,5 +83,16 @@ func (p *Server) Run(ctx context.Context) (err error) {
 		return next.Run(ctx, p)
 	}
 
-	return p.grpc.Serve(p.lis)
+	ctx, cancel := context.WithCancel(ctx)
+	var group errgroup.Group
+	group.Go(func() error {
+		<-ctx.Done()
+		return p.Close()
+	})
+	group.Go(func() error {
+		defer cancel()
+		return p.grpc.Serve(p.lis)
+	})
+
+	return group.Wait()
 }
