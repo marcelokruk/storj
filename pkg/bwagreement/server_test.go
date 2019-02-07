@@ -210,7 +210,7 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 		   Satellite will verify Renter's Signature. */
 		{
 			manipRBA := *rba
-			manipSignature := GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
 			assert.NoError(t, err)
 			// Using self created signature
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, rba)
@@ -222,7 +222,7 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 		   Satellite will check uplink Certs against uplinkeId. */
 		{
 			manipRBA := *rba
-			manipSignature := GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
 			// Using self created signature + public key
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
 			assert.True(t, pb.ErrRenter.Has(err), err.Error())
@@ -235,7 +235,7 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			manipRBA := *rba
 			// Overwrite the uplinkId with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
 			// Using self created signature + public key
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
@@ -248,9 +248,9 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			manipRBA := *rba
 			// Overwrite the uplinkId with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
 			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
 			// Using self created Payer and Renter bwagreement signatures
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
@@ -263,9 +263,9 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			manipRBA := *rba
 			// Overwrite the uplinkId with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
 			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
 			// Using self created Payer and Renter bwagreement signatures
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
 			assert.True(t, pb.ErrRenter.Has(err), err.Error())
@@ -279,9 +279,9 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			// Overwrite the uplinkId and satelliteID with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
 			manipRBA.PayerAllocation.SatelliteId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipPrivKey)
+			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
 			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipPrivKey)
+			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
 			// Using self created Payer and Renter bwagreement signatures
 			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
 			assert.True(t, pb.ErrPayer.Has(err), err.Error())
