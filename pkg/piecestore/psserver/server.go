@@ -311,7 +311,7 @@ func (s *Server) verifySignature(ctx context.Context, rba *pb.RenterBandwidthAll
 		return pb.ErrPayer.Wrap(auth.ErrExpired.New("%v vs %v", exp, time.Now().UTC()))
 	}
 	//verify message crypto
-	if err := auth.VerifyMessage(rba, s.identity.Leaf.PublicKey); err != nil {
+	if err := auth.VerifyMessage(rba, pi.Leaf.PublicKey); err != nil {
 		return pb.ErrRenter.Wrap(err)
 	}
 	if !s.isWhitelisted(pba.SatelliteId) {
