@@ -262,8 +262,3 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 		}
 	}
 }
-
-func callBWA(ctx context.Context, t *testing.T, sat *bwagreement.Server, signature []byte, rba *pb.RenterBandwidthAllocation) (*pb.AgreementsSummary, error) {
-	rba.SetSignature(signature)
-	return sat.BandwidthAgreements(ctx, rba)
-}
