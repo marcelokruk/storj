@@ -5,16 +5,13 @@ package bwagreement_test
 
 import (
 	"context"
-	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -26,7 +23,6 @@ import (
 	"storj.io/storj/pkg/bwagreement/testbwagreement"
 	"storj.io/storj/pkg/identity"
 	"storj.io/storj/pkg/pb"
-	"storj.io/storj/pkg/pkcrypto"
 	"storj.io/storj/pkg/storj"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/satellitedb/satellitedbtest"
@@ -190,8 +186,8 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 		   Satellite will verify Renter's Signature. */
 		{
 			manipRBA := *rba
-			// Using uplink signature
-			reply, err := callBWA(ctxSN1, t, satellite, rba.GetSignature(), &manipRBA)
+			// Using uplink signatur
+			reply, err := satellite.BandwidthAgreements(ctxSN1, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
 			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
 		}
@@ -200,22 +196,10 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 		   Satellite will verify Renter's Signature. */
 		{
 			manipRBA := *rba
-			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
-			assert.NoError(t, err)
+			assert.NoError(t, auth.SignMessage(&manipRBA, manipID.Key))
 			// Using self created signature
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, rba)
+			reply, err := satellite.BandwidthAgreements(ctxSN1, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
-			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
-		}
-
-		/* Storage node can't replace uplink Certs
-		   Satellite will check uplink Certs against uplinkeId. */
-		{
-			manipRBA := *rba
-			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
-			// Using self created signature + public key
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
-			assert.True(t, pb.ErrRenter.Has(err), err.Error())
 			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
 		}
 
@@ -225,9 +209,9 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			manipRBA := *rba
 			// Overwrite the uplinkId with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA, manipID.Key)
+			assert.NoError(t, auth.SignMessage(&manipRBA, manipID.Key))
 			// Using self created signature + public key
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
+			reply, err := satellite.BandwidthAgreements(ctxSN1, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
 			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
 		}
@@ -238,27 +222,11 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			manipRBA := *rba
 			// Overwrite the uplinkId with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
-			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
+			assert.NoError(t, auth.SignMessage(&manipRBA.PayerAllocation, manipID.Key))
+			assert.NoError(t, auth.SignMessage(&manipRBA, manipID.Key))
 			// Using self created Payer and Renter bwagreement signatures
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
+			reply, err := satellite.BandwidthAgreements(ctxSN1, &manipRBA)
 			assert.True(t, auth.ErrVerify.Has(err) && pb.ErrRenter.Has(err), err.Error())
-			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
-		}
-
-		/* Storage node can't replace the satellite Certs.
-		   Satellite will check satellite certs against satelliteId. */
-		{
-			manipRBA := *rba
-			// Overwrite the uplinkId with our own keypair
-			manipRBA.PayerAllocation.UplinkId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
-			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
-			// Using self created Payer and Renter bwagreement signatures
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
-			assert.True(t, pb.ErrRenter.Has(err), err.Error())
 			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
 		}
 
@@ -269,11 +237,10 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 			// Overwrite the uplinkId and satelliteID with our own keypair
 			manipRBA.PayerAllocation.UplinkId = manipID.ID
 			manipRBA.PayerAllocation.SatelliteId = manipID.ID
-			manipSignature := GetSignature(t, &manipRBA.PayerAllocation, manipID.Key)
-			manipRBA.PayerAllocation.Signature = manipSignature
-			manipSignature = GetSignature(t, &manipRBA, manipID.Key)
+			assert.NoError(t, auth.SignMessage(&manipRBA.PayerAllocation, manipID.Key))
+			assert.NoError(t, auth.SignMessage(&manipRBA, manipID.Key))
 			// Using self created Payer and Renter bwagreement signatures
-			reply, err := callBWA(ctxSN1, t, satellite, manipSignature, &manipRBA)
+			reply, err := satellite.BandwidthAgreements(ctxSN1, &manipRBA)
 			assert.True(t, pb.ErrPayer.Has(err), err.Error())
 			assert.Equal(t, pb.AgreementsSummary_REJECTED, reply.Status)
 		}
@@ -299,17 +266,4 @@ func testDatabase(ctx context.Context, t *testing.T, db satellite.DB) {
 func callBWA(ctx context.Context, t *testing.T, sat *bwagreement.Server, signature []byte, rba *pb.RenterBandwidthAllocation) (*pb.AgreementsSummary, error) {
 	rba.SetSignature(signature)
 	return sat.BandwidthAgreements(ctx, rba)
-}
-
-//GetSignature returns the signature of the signed message
-func GetSignature(t *testing.T, msg auth.SignableMessage, privKey crypto.PrivateKey) []byte {
-	require.NotNil(t, msg)
-	oldSignature := msg.GetSignature()
-	msg.SetSignature(nil)
-	msgBytes, err := proto.Marshal(msg)
-	require.NoError(t, err)
-	signature, err := pkcrypto.HashAndSign(privKey, msgBytes)
-	require.NoError(t, err)
-	msg.SetSignature(oldSignature)
-	return signature
 }
