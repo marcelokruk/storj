@@ -88,10 +88,14 @@ func (s *Server) BandwidthAgreements(ctx context.Context, rba *pb.RenterBandwidt
 		return reply, pb.ErrPayer.Wrap(auth.ErrExpired.New("%v vs %v", exp, time.Now().UTC()))
 	}
 	//verify message crypto
-	if err := auth.VerifyMessage(rba, s.identity.Leaf.PublicKey); err != nil {
+	uplinkKey, err := s.certdb.GetPublicKey(ctx, pba.UplinkId)
+	if err != nil {
+		return reply, pb.ErrRenter.Wrap(auth.ErrVerify.Wrap(err))
+	}
+	if err := auth.VerifyMessage(rba, uplinkKey); err != nil {
 		return reply, pb.ErrRenter.Wrap(err)
 	}
-	if err := auth.VerifyMessage(&pba, nil); err != nil {
+	if err := auth.VerifyMessage(&pba, s.identity.Leaf.PublicKey); err != nil {
 		return reply, pb.ErrPayer.Wrap(err)
 	}
 	//save and return rersults
